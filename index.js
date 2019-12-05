@@ -1,0 +1,341 @@
+<html>
+    <head>
+        <style>
+            canvas{
+                border: 1px solid pink;
+            }
+        </style>
+    </head>
+    <body>
+        <input type="file" onchange="parse(this)">
+        <canvas></canvas>
+        <img />
+    </body>
+    
+    <script>
+        const p = '02168c2d99872a1cdc33a00275ec95faa8de608c04914c0100'
+        const data = '8c2d99872a1cdc33a00275ec95faa8de608c04914c01'
+        const table = 'ffffffff00000000ff000000'
+
+        function transToArray(s) {
+            return s.split('').reduce((h, k, i) => {
+                if(i % 2 === 1) h.push(parseInt(s[i - 1] + k, 16))
+                return h
+            }, [])
+        }
+
+        function transToString(arr) {
+            return arr.map( p => {
+                let s = p.toString(16)
+                return s.length === 1 ? '0'.concat(s) : s
+            }).join('')
+        }
+
+        function lzwDecoder(minCodeSize, data) {
+            // data = [140, 45, 153, 135, 42, 28, 220, 51, 160, 2, 117, 236, 149, 250, 168, 222, 96, 140, 4, 145, 76, 1]
+            let clearCode = 1 << minCodeSize, codeSize = minCodeSize + 1
+            let endInfoCode = clearCode + 1
+            let dict = [], output = [], last, code, pos = 0
+
+            // let dataStr = transToString(data)
+            function readCode(size) {
+                let code = 0
+                for (let i = 0; i < size; i++) {
+                    if (data[pos >> 3] & (1 << (pos % 8))) {
+                        code = code | 1 << i
+                    }
+                    pos++
+                }
+                return code
+            }
+
+            function clear() {
+                dict = []
+                for (let i = 0; i < clearCode; i++) {
+                    dict[i] = [i]
+                }
+                dict[clearCode] = []
+                dict[endInfoCode] = null
+            }
+
+            while(true){
+                last = code
+                code = readCode(codeSize)
+                if (code == clearCode) {
+                    clear()
+                    continue
+                }
+                if(code == endInfoCode) break
+                if (code < dict.length) {
+                    if (last != clearCode) {
+                        dict.push(dict[last].concat(dict[code][0]))
+                    }
+                } else {
+                    dict.push(dict[last].concat(dict[last][0]))
+                }
+                output.push(dict[code])
+                if (dict.length == (1 << codeSize) && codeSize < 12) {
+                    codeSize++
+                }
+            }
+            return output.flat(1)
+            // output: [1, 1, 1, 1, 1, 2, 2, 2, 2, 2 ....]
+        }
+
+        function lzwEncoder(minCodeSize, data) {
+            // data = [1, 1, 1, 1, 1, 2, 2, 2, 2, 2, 1, 1, 1, 1, 1, 2, 2, 2, 2, 2, 1, 1, 1, 1, 1, 2, 2, 2, 2, 2, 1, 1, 1, 0, 0, 0, 0, 2, 2, 2, 1, 1, 1, 0, 0, 0, 0, 2, 2, 2, 2, 2, 2, 0, 0, 0, 0, 1, 1, 1, 2, 2, 2, 0, 0, 0, 0, 1, 1, 1, 2, 2, 2, 2, 2, 1, 1, 1, 1, 1, 2, 2, 2, 2, 2, 1, 1, 1, 1, 1, 2, 2, 2, 2, 2, 1, 1, 1, 1, 1]
+            let codeSize = minCodeSize + 1
+            let clearCode = 1 << minCodeSize, endInfoCode = clearCode + 1, dict = []
+            
+            function clear() {
+                for (let i = 0; i < endInfoCode; i++) {
+                    dict[i] = String(i)
+                }
+                dict[clearCode] = ''
+                dict[endInfoCode] = null
+            }
+            
+            let arr = data, pos = 1, k = '', buff = String(arr[0]), output = [clearCode]
+            let hexPos = 0, hexBuff = 0, hexOut = []
+
+            function convertToByte(n, size) {
+                for (let i = 0; i < size; i++) {
+                    hexBuff = hexBuff | (n & 1 << i) << (hexPos % 8)
+                }
+                if (hexPos % 8 + size >= 8) {
+                    hexOut.push(hexBuff & 0b11111111)
+                    hexBuff = hexBuff >> 8
+                }
+                hexPos += size
+            }
+
+            clear()
+            convertToByte(clearCode, codeSize)
+            while(true){
+                if (pos >= arr.length) break
+                k = arr[pos]
+                let tmp = `${buff},${k}`
+                if (dict.includes(tmp)) {
+                    buff = tmp
+                } else {
+                    dict.push(tmp)
+                    let n = dict.indexOf(buff)
+                    output.push(n)
+                    buff = String(k)
+                    convertToByte(n, codeSize)
+                    if (dict.length - 1 >= (1 << codeSize) && codeSize < 12) {
+                        codeSize++
+                    }
+                }
+                pos++
+            }
+            let n = dict.indexOf(buff)
+            output.push(n)
+            convertToByte(n, codeSize)
+            output.push(endInfoCode)
+            convertToByte(endInfoCode, codeSize)
+            if (hexBuff > 0) hexOut.push(hexBuff)
+            return hexOut
+            // output: [140, 45, 153, 135, 42, 28, 220, 51, 160, 2, 117, 236, 149, 250, 168, 222, 96, 140, 4, 145, 76, 1]
+        }
+
+        function decodeColorTable(t){
+            if(t.length % 3 !== 0) return null
+            return t.reduce((h, k, i) => {
+                if(i % 3 === 2) h.push(`rgb(${t[i - 2]}, ${t[i - 1]}, ${k})`)
+                return h
+            }, [])
+        }
+
+        function parse(f) {
+            let file = f.files[0]
+            let fr = new FileReader()
+            let typedArray
+            fr.onload = () => {
+                typedArray = new Uint8Array(fr.result)
+                // console.log(typedArray)
+                console.log(parseGif(typedArray))
+            }
+            fr.readAsArrayBuffer(file)
+        }
+
+        function equal(list1, list2) {
+            return list1.join('') === list2.join('')
+        }
+
+        function parseScreenDescriptor(list) {
+            const flag = list[4], w = getValue(list, 0), h = getValue(list, 2)
+            return [(flag >> 4) & 7, flag >> 7, w, h]
+        }
+
+        const header = [71, 73, 70, 56, 57, 97]
+        let screenDescriptor = [], colorTable = [], appExt = [], commentsExt = []
+        function parseGif(array) {
+            console.log(array.length)
+            if (!equal(array.slice(0, 6), header)) return new Error('Error image type.')
+            screenDescriptor = array.slice(6, 13)
+            const [N, colorTableFlag, bwidth, bheight] = parseScreenDescriptor(screenDescriptor)
+            const colorTableSize = Math.pow(2, N + 1)
+            let nextIndex = 13 + colorTableSize * 3
+            // console.log(array.slice(nextIndex, nextIndex + 10))
+            colorTable = array.slice(13, nextIndex)
+            const tableRGB = decodeColorTable(colorTable)
+            console.log(tableRGB)
+            // 应用拓展
+            if (array[nextIndex] === 33 && array[nextIndex + 1] === 255) {
+                appExt = array.slice(nextIndex, nextIndex + 19)
+                nextIndex += 19
+            }
+            // 评论拓展
+            if (array[nextIndex] === 33 && array[nextIndex + 1] === 254) {
+                let size = array[nextIndex + 2]
+                commentsExt = array.slice(nextIndex, nextIndex + size + 4)
+                nextIndex += (size + 4)
+            }
+            let frames = parseFrame(array, nextIndex)
+
+            // 选择文字颜色
+            // rgb(0, 0, 0) => 7
+
+            let textColor = 7
+            let { tData, w, h } = getTextPixel("hello", 30)
+            let tTop = 10, tLeft = (bwidth - w) >> 1
+            // let posX = , posY = 
+            frames = frames.map(f => {
+                let { left, top, width, height } = f
+                f.data = f.data.map((p, i) => {
+                    let px = i % width + left, py = (i - i % width) / width + top
+                    let tx = px - tLeft, ty = py - tTop
+                    if (tx > 0 && tx < w && ty > 0 && ty < h) {
+                        return tData[ty * w + tx]
+                    } else {
+                        return p
+                    }
+                })
+                return f
+            })
+
+            let fileContent = [...header, ...screenDescriptor, ...colorTable, ...appExt, ...commentsExt]
+            let result = frames.reduce((h, k, i) => {
+               let re = [...k.head, ...lzwEncoder(k.minCodeSize, k.data), 0]
+               h = h.concat(re)
+               return h
+            }, fileContent)
+            result.push(59)
+            console.log(result)
+
+            let file = new Blob([result], { type: 'image/gif' })
+            document.querySelector('img').src = URL.createObjectURL(file)
+        }
+
+        function getValue(list, begin) {
+            if (list.length - 1 < begin + 2) return null
+            let [a, b] = list.slice(begin, begin + 2)
+            return (b << 8) | a
+        }
+
+        function parseImgDescriptor(d) {
+            let c = getValue
+            return { left: c(d, 1), top: c(d, 3), width: c(d, 5), height: c(d, 7) }
+        }
+
+        function parseFrame(array, index) {
+            let i = index, frames = []
+            while(true){
+                // 3b 结尾
+                if (array[i] === 59 || array[i] === undefined) {
+                    break
+                }
+                let begin = i
+                // 图形控件
+                let time = 0
+                // let left, top, width, height, localColorFlag
+                if (array[i] === 33 && array[i + 1] === 249) {
+                    let size = array[i + 2]
+                    let a = array.slice(i, size + 4)
+                    time = getValue(a, 4) * 0.01 //seconds
+                    // console.log(time)
+                    i += (size + 4)
+                }
+                // 图像描述
+                let options = {}
+                if (array[i] === 44) {
+                    let localFlag = array[i + 9] & 0x80, localSize = array[i + 9] & 0x07
+                    // console.log(localFlag, localSize);
+                    options = parseImgDescriptor(array.slice(i, i + 10))
+                    i += 10
+                }
+                // 可能需处理本地颜色table
+                // 暂时不处理
+
+                let minCodeSize = array[i]
+                i++
+                let headEndIndex = i
+                let { imgData, next } = parseImg(array, i, minCodeSize)
+                frames.push({head: array.slice(begin, headEndIndex), minCodeSize, data: imgData, begin: i, end: next, ...options})
+
+                i = next
+            }
+            console.log(frames)
+            return frames
+        }
+
+        function parseImg(array, index, minCodeSize) {
+            let block = {}, frame = []
+            let pos = index
+            function readByte(size) {
+                let re
+                if (!size) {
+                    re = array[pos]
+                    pos++
+                } else {
+                    re = array.slice(pos, pos + size)
+                    pos+=size
+                }
+                return re
+            }
+            while(true){
+                block.size = readByte()
+                if (block.size === 0) break
+                block.data = readByte(block.size)
+                frame = frame.concat(Array.from(block.data))
+            }
+            let pixelData = lzwDecoder(minCodeSize, frame)
+            return { imgData: pixelData, next: pos }
+        }
+
+        let x = lzwEncoder(2, [])
+        console.log(x)
+
+        // letter-spacing: 1px
+        let text = 'Hello'
+        function getTextPixel(text, fontSize) {
+            const spacing = 1
+            let canvas = document.querySelector('canvas')
+            canvas.height = fontSize
+            canvas.width = text.length * fontSize
+            let ctx = canvas.getContext("2d")
+            ctx.font = `bold ${fontSize}px 宋体`
+            ctx.textAlign = 'left'
+            ctx.fillStyle = '#000000'
+            ctx.textBaseline = 'top'
+            ctx.fillText(text, 0, 0)
+            const width = ctx.measureText(text).width
+            const imageData = ctx.getImageData(0, 0, width, fontSize)
+            let array = Array.from(imageData.data)
+            let result = array.reduce((h, k, i) => {
+                if (i % 3 === 2) {
+                    if (k | array[i - 1] | array[i - 2] === 0) h.push(0)
+                    else h.push(1)
+                }
+                return h
+            }, [])
+            return { tData: result, w:  imageData.width, h: imageData.height }
+        }
+        getTextPixel(text, 30)
+
+        // let y = lzwDecoder(2, data)
+        // console.log(y)
+        
+    </script>
+</html>
