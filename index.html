@@ -10,6 +10,7 @@
         <input type="file" onchange="parse(this)">
         <canvas></canvas>
         <img />
+        <img id="img2" />
     </body>
     
     <script>
@@ -95,22 +96,33 @@
                 dict[endInfoCode] = null
             }
             
-            let arr = data, pos = 1, k = '', buff = String(arr[0]), output = [clearCode]
-            let hexPos = 0, hexBuff = 0, hexOut = []
+            let arr = [], pos = 1, k = '', buff = '', output = []
+            let hexPos = 0, hexBuff = 0, hexBuffSize = 0, hexOut = []
+
+            function init() {
+                arr = data
+                buff = String(arr[0])
+                output = [clearCode]
+                hexOut = []
+            }
 
             function convertToByte(n, size) {
                 for (let i = 0; i < size; i++) {
                     hexBuff = hexBuff | (n & 1 << i) << (hexPos % 8)
                 }
-                if (hexPos % 8 + size >= 8) {
-                    hexOut.push(hexBuff & 0b11111111)
+                hexBuffSize += size
+                while(hexBuffSize >= 8){
+                    hexOut.push(hexBuff & 0xff)
                     hexBuff = hexBuff >> 8
+                    hexBuffSize -= 8
                 }
                 hexPos += size
             }
 
             clear()
+            init()
             convertToByte(clearCode, codeSize)
+            let flag = false
             while(true){
                 if (pos >= arr.length) break
                 k = arr[pos]
@@ -153,7 +165,15 @@
             let typedArray
             fr.onload = () => {
                 typedArray = new Uint8Array(fr.result)
-                // console.log(typedArray)
+                console.log(typedArray)
+                // let array = Array.from(typedArray)
+                // let ab = new ArrayBuffer(array.length)
+                // let ta = new Uint8Array(ab)
+                // for (let i = 0; i < ta.length; i++) {
+                //     ta[i] = array[i]
+                // }
+                // let file = new Blob([ta], { type: 'image/gif' })
+                // document.querySelector('#img2').src = URL.createObjectURL(file)
                 console.log(parseGif(typedArray))
             }
             fr.readAsArrayBuffer(file)
@@ -170,6 +190,25 @@
 
         const header = [71, 73, 70, 56, 57, 97]
         let screenDescriptor = [], colorTable = [], appExt = [], commentsExt = []
+
+        function addTextPixel(frames, options) {
+            let { tData, w, h, tTop, tLeft } = options
+            let result = frames.map(f => {
+                let { left, top, width, height } = f
+                f.data = f.data.map((p, i) => {
+                    let px = i % width + left, py = (i - i % width) / width + top
+                    let tx = px - tLeft, ty = py - tTop
+                    if (tx > 0 && tx < w && ty > 0 && ty < h) {
+                        return tData[ty * w + tx] === 1 ? 7 : 6
+                    } else {
+                        return p
+                    }
+                })
+                return f
+            })
+            return result
+        }
+
         function parseGif(array) {
             console.log(array.length)
             if (!equal(array.slice(0, 6), header)) return new Error('Error image type.')
@@ -179,6 +218,8 @@
             let nextIndex = 13 + colorTableSize * 3
             // console.log(array.slice(nextIndex, nextIndex + 10))
             colorTable = array.slice(13, nextIndex)
+            console.log(colorTable)
+
             const tableRGB = decodeColorTable(colorTable)
             console.log(tableRGB)
             // 应用拓展
@@ -200,31 +241,38 @@
             let textColor = 7
             let { tData, w, h } = getTextPixel("hello", 30)
             let tTop = 10, tLeft = (bwidth - w) >> 1
-            // let posX = , posY = 
-            frames = frames.map(f => {
-                let { left, top, width, height } = f
-                f.data = f.data.map((p, i) => {
-                    let px = i % width + left, py = (i - i % width) / width + top
-                    let tx = px - tLeft, ty = py - tTop
-                    if (tx > 0 && tx < w && ty > 0 && ty < h) {
-                        return tData[ty * w + tx]
-                    } else {
-                        return p
-                    }
-                })
-                return f
-            })
-
+            frames = addTextPixel(frames, { tData, w, h, tTop, tLeft })
+            
             let fileContent = [...header, ...screenDescriptor, ...colorTable, ...appExt, ...commentsExt]
+
             let result = frames.reduce((h, k, i) => {
-               let re = [...k.head, ...lzwEncoder(k.minCodeSize, k.data), 0]
-               h = h.concat(re)
-               return h
+                let tmp = lzwEncoder(k.minCodeSize, k.data)
+                let data = []
+                for (let j = 0; j < tmp.length; j++) {
+                    if (j % 255 === 0) {
+                        if (j + 255 < tmp.length) {
+                            data.push(tmp.slice(j, j + 255))
+                        } else {
+                            data.push(tmp.slice(j))
+                            break
+                        }
+                    }
+                }
+                data = data.map(el => [ el.length, ...el ]).flat(1)
+                let re = [...k.head, ...data, 0]
+                h = h.concat(re)
+                return h
             }, fileContent)
             result.push(59)
             console.log(result)
 
-            let file = new Blob([result], { type: 'image/gif' })
+            let arrayBuffer = new ArrayBuffer(result.length)
+            let typedArray = new Uint8Array(arrayBuffer)
+            for (let i = 0; i < typedArray.length; i++) {
+                typedArray[i] = result[i]
+            }
+
+            let file = new Blob([typedArray], { type: 'image/gif' })
             document.querySelector('img').src = URL.createObjectURL(file)
         }
 
@@ -270,9 +318,8 @@
 
                 let minCodeSize = array[i]
                 i++
-                let headEndIndex = i
                 let { imgData, next } = parseImg(array, i, minCodeSize)
-                frames.push({head: array.slice(begin, headEndIndex), minCodeSize, data: imgData, begin: i, end: next, ...options})
+                frames.push({head: array.slice(begin, i), minCodeSize, data: imgData, begin: i, end: next, ...options})
 
                 i = next
             }
@@ -304,10 +351,9 @@
             return { imgData: pixelData, next: pos }
         }
 
-        let x = lzwEncoder(2, [])
-        console.log(x)
+        // let x = lzwEncoder(2, [])
+        // console.log(x)
 
-        // letter-spacing: 1px
         let text = 'Hello'
         function getTextPixel(text, fontSize) {
             const spacing = 1
@@ -323,16 +369,22 @@
             const width = ctx.measureText(text).width
             const imageData = ctx.getImageData(0, 0, width, fontSize)
             let array = Array.from(imageData.data)
+            let limit = 1
+            let count = 0
             let result = array.reduce((h, k, i) => {
-                if (i % 3 === 2) {
-                    if (k | array[i - 1] | array[i - 2] === 0) h.push(0)
-                    else h.push(1)
+                if (i % 4 === 3) {
+                    if (k > 0) h.push(1)
+                    else {
+                        count++
+                        h.push(0)
+                    }
                 }
                 return h
             }, [])
+            console.log(result.length, count)
             return { tData: result, w:  imageData.width, h: imageData.height }
         }
-        getTextPixel(text, 30)
+        // getTextPixel(text, 30)
 
         // let y = lzwDecoder(2, data)
         // console.log(y)
